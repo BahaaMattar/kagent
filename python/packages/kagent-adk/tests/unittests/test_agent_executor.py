@@ -9,7 +9,9 @@ from a2a.types import Artifact, Message, Part, Role, SendMessageRequest, TaskArt
 from google.adk.a2a.converters.request_converter import AgentRunRequest
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.agents.run_config import RunConfig, StreamingMode
-from google.adk.runners import InMemoryRunner
+from google.adk.events.event import Event
+from google.adk.runners import InMemoryRunner, Runner
+from google.genai import types
 from google.protobuf.json_format import ParseDict
 from google.protobuf.struct_pb2 import Value
 from kagent.core.a2a import (
@@ -22,6 +24,8 @@ from kagent.core.a2a._requests import KAgentUser
 import kagent.adk._agent_executor as executor_module
 from kagent.adk._agent_executor import A2aAgentExecutor, A2aAgentExecutorConfig
 from kagent.adk._bearer_token import bearer_token
+from kagent.adk._local_session_service import LocalSessionService
+from kagent.adk._request_headers import headers_from_state
 from kagent.adk._request_identity import request_user_id
 
 
@@ -57,8 +61,47 @@ def test_request_converter_adds_headers_without_mutating_message_metadata(stream
     run_request = executor._convert_request(context, None)
 
     assert run_request.run_config.streaming_mode == expected_mode
-    assert run_request.state_delta == {"headers": {"authorization": "Bearer token"}}
+    assert run_request.state_delta == {"temp:headers": {"authorization": "Bearer token"}}
     assert not context.message.metadata
+
+
+@pytest.mark.asyncio
+async def test_request_headers_are_visible_during_invocation_but_not_persisted(tmp_path):
+    """Regression test for #3658: the Authorization header must not be stored."""
+    context = _request_context(state={"headers": {"authorization": "Bearer secret-token", "x-team": "a"}})
+    executor = A2aAgentExecutor(runner=lambda: None, config=A2aAgentExecutorConfig())
+    run_request = executor._convert_request(context, None)
+
+    seen_during_run: list[dict] = []
+
+    class RecordingAgent(BaseAgent):
+        async def _run_async_impl(self, ctx):
+            seen_during_run.append(headers_from_state(ctx.session.state))
+            yield Event(author=self.name, invocation_id=ctx.invocation_id)
+
+    session_service = LocalSessionService(db_url=f"sqlite+aiosqlite:///{(tmp_path / 'sessions.db').as_posix()}")
+    runner = Runner(app_name="app", agent=RecordingAgent(name="agent"), session_service=session_service)
+    session = await session_service.create_session(app_name="app", user_id="user-1", session_id="context-1")
+
+    async for _ in runner.run_async(
+        user_id="user-1",
+        session_id=session.id,
+        new_message=types.Content(role="user", parts=[types.Part(text="hello")]),
+        state_delta=run_request.state_delta,
+    ):
+        pass
+
+    # Header providers, plugins and tools still see the headers during the invocation.
+    assert seen_during_run == [{"authorization": "Bearer secret-token", "x-team": "a"}]
+
+    # Nothing about the headers is written to the stored session state or event history.
+    stored = await session_service.get_session(app_name="app", user_id="user-1", session_id=session.id)
+    assert stored is not None
+    assert "temp:headers" not in stored.state
+    assert "headers" not in stored.state
+    assert stored.events
+    for event in stored.events:
+        assert "secret-token" not in event.model_dump_json()
 
 
 def test_convert_request_sets_bearer_token_context_var():

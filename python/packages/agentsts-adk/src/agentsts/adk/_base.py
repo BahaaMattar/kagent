@@ -31,6 +31,10 @@ from typing_extensions import override
 
 logger = logging.getLogger(__name__)
 
+# Invocation-scoped request headers. ADK trims ``temp:`` keys from events
+# before a session service persists them, so credentials are not stored.
+TEMP_HEADERS_KEY = "temp:headers"
+# Legacy key, read only when TEMP_HEADERS_KEY is absent.
 HEADERS_KEY = "headers"
 
 # Eviction bound for an entry whose tokens state no expiry, so that such an
@@ -68,7 +72,9 @@ def _acting_credential(state: dict) -> Optional[str]:
     implementation reading a session-scoped field returns the same value for
     every caller. Only the inbound Authorization header is caller-scoped.
     """
-    headers = state.get(HEADERS_KEY, None)
+    headers = state.get(TEMP_HEADERS_KEY, None)
+    if headers is None:
+        headers = state.get(HEADERS_KEY, None)
     if not isinstance(headers, dict):
         headers = {}
     return _extract_jwt_from_headers(headers)
@@ -106,7 +112,8 @@ class ADKSTSIntegration(STSIntegrationBase):
     """Google ADK-specific STS integration.
 
     By default, the subject token is read from the ``Authorization`` header
-    stored in the session state under the ``headers`` key.  To retrieve the
+    in the invocation-scoped session state under ``temp:headers``, falling
+    back to the legacy ``headers`` key when ``temp:headers`` is absent.  To retrieve the
     subject token from a custom source, pass a ``get_subject_token`` callback::
 
         integration = ADKSTSIntegration(
@@ -139,7 +146,8 @@ class ADKSTSIntegration(STSIntegrationBase):
             use_issuer_host: Replace the host:port in token_endpoint with the host:port from well_known_uri
             get_subject_token: Optional callback that takes session.state (dict) and returns
                 the subject token string or None. If not set, defaults to extracting the
-                JWT from the Authorization header in session.state["headers"]. When
+                JWT from the Authorization header in session.state["temp:headers"]
+                (or the legacy session.state["headers"] when that is absent). When
                 the caller sends no Authorization header, the callback also identifies
                 the caller.
         """

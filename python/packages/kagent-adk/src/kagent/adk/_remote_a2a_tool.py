@@ -48,6 +48,7 @@ from kagent.core.a2a import (
 )
 
 from ._hitl import build_remote_hitl_state, get_remote_hitl_state, remote_hitl_hint
+from ._request_headers import headers_from_state
 from ._request_identity import public_context_id, request_user_id
 
 logger = logging.getLogger("kagent_adk." + __name__)
@@ -55,7 +56,6 @@ logger = logging.getLogger("kagent_adk." + __name__)
 _USER_ID_CONTEXT_KEY = "x-user-id"
 _SOURCE_HEADER = "x-kagent-source"
 _SOURCE_SUBAGENT = "agent"
-_HEADERS_STATE_KEY = "headers"
 
 # Conversation-lineage headers propagated on outbound A2A calls so a remote
 # agent can correlate this turn with the originating chat conversation —
@@ -235,9 +235,7 @@ class KAgentRemoteA2ATool(BaseTool):
             parent_context_id = public_context_id.get() or getattr(session, "id", None)
             state = getattr(session, "state", None)
             if isinstance(state, dict):
-                hdrs = state.get(_HEADERS_STATE_KEY)
-                if isinstance(hdrs, dict):
-                    inbound_headers = hdrs
+                inbound_headers = headers_from_state(state)
 
         if not parent_context_id:
             return {}

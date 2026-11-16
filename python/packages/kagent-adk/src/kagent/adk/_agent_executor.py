@@ -57,6 +57,7 @@ from pydantic import BaseModel
 from ._bearer_token import bearer_token, extract_bearer_token
 from ._hitl import build_hitl_status_message, build_resume_hitl_message
 from ._mcp_toolset import is_anyio_cross_task_cancel_scope_error
+from ._request_headers import HEADERS_STATE_KEY
 from ._request_identity import public_context_id, request_user_id
 from ._turn_usage import TurnUsage, attach_turn_usage
 from .converters.event_converter import serialize_metadata_value
@@ -359,7 +360,9 @@ class A2aAgentExecutor(AgentExecutor):
         )
         headers = _call_state(context).get("headers", {})
         headers = headers if isinstance(headers, dict) else {}
-        run_request.state_delta = {"headers": headers}
+        # temp: state is visible for this invocation only; ADK trims it before
+        # persisting the event, so headers (e.g. Authorization) are not stored.
+        run_request.state_delta = {HEADERS_STATE_KEY: headers}
         # Also stash the token in a ContextVar for consumers with no
         # callback_context of their own - see _bearer_token.py.
         bearer_token.set(extract_bearer_token(headers))
